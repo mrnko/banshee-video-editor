@@ -16,6 +16,14 @@ use tokio::process::Command;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+/// Console tools such as FFmpeg must not create a visible terminal for GUI users.
+fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
 #[derive(Debug, Clone)]
 pub struct MediaTools {
     pub ffmpeg: PathBuf,
@@ -40,7 +48,7 @@ impl MediaTools {
     }
 
     pub async fn probe(&self, path: &Path) -> Result<SourceMedia> {
-        let output = Command::new(&self.ffprobe)
+        let output = background_command(&self.ffprobe)
             .args([
                 "-v",
                 "error",
@@ -106,7 +114,7 @@ impl MediaTools {
         thumbnail_dir: &Path,
     ) -> Result<Vec<CandidateClip>> {
         std::fs::create_dir_all(thumbnail_dir)?;
-        let metrics = Command::new(&self.ffmpeg)
+        let metrics = background_command(&self.ffmpeg)
             .args(["-hide_banner", "-nostdin", "-i"])
             .arg(&source.path)
             .args([
@@ -120,7 +128,7 @@ impl MediaTools {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .output();
-        let silence = Command::new(&self.ffmpeg)
+        let silence = background_command(&self.ffmpeg)
             .args(["-hide_banner", "-nostdin", "-i"])
             .arg(&source.path)
             .args([
@@ -198,7 +206,7 @@ impl MediaTools {
             let id = Uuid::new_v4().to_string();
             let thumbnail = thumbnail_dir.join(format!("candidate-{:02}.jpg", index + 1));
             let _ = self
-                .thumbnail(
+                .generate_thumbnail(
                     Path::new(&source.path),
                     start + (end - start) * 0.35,
                     &thumbnail,
@@ -208,6 +216,7 @@ impl MediaTools {
                 id, project_id: project_id.into(), start_seconds: start, end_seconds: end,
                 score: (55.0 + event.score * 40.0).clamp(0.0, 99.0),
                 reason: format!("Локально знайдено високу динаміку кадру ({:.0}%) і візуальну насиченість ({:.0}%); фрагмент починається близько до піку дії.", (event.motion / 28.0 * 100.0).clamp(0.0, 100.0), (event.saturation / 70.0 * 100.0).clamp(0.0, 100.0)),
+                name: None,
                 thumbnail_path: thumbnail.is_file().then(|| thumbnail.to_string_lossy().into_owned()),
                 estimated_cost_usd: 0.0, analysis_source: AnalysisSource::Local,
             });
@@ -224,7 +233,7 @@ impl MediaTools {
         if source.audio_codec.is_none() {
             return Ok(None);
         }
-        let detect = Command::new(&self.ffmpeg)
+        let detect = background_command(&self.ffmpeg)
             .args(["-hide_banner", "-nostdin", "-i"])
             .arg(&source.path)
             .args(["-af", "volumedetect", "-vn", "-f", "null", "-"])
@@ -242,7 +251,7 @@ impl MediaTools {
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let status = Command::new(&self.ffmpeg)
+        let status = background_command(&self.ffmpeg)
             .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
             .arg(&source.path)
             .args([
@@ -257,8 +266,8 @@ impl MediaTools {
         Ok(Some(output.to_path_buf()))
     }
 
-    async fn thumbnail(&self, input: &Path, time: f64, output: &Path) -> Result<()> {
-        let status = Command::new(&self.ffmpeg)
+    pub async fn generate_thumbnail(&self, input: &Path, time: f64, output: &Path) -> Result<()> {
+        let status = background_command(&self.ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -294,7 +303,7 @@ impl MediaTools {
             fps.max(1)
         );
         let pattern = output_dir.join("frame-%08d.png");
-        let result = Command::new(&self.ffmpeg)
+        let result = background_command(&self.ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -331,7 +340,7 @@ impl MediaTools {
         output: &Path,
     ) -> Result<SourceMedia> {
         let pattern = frames_dir.join("frame-%08d.png");
-        let result = Command::new(&self.ffmpeg)
+        let result = background_command(&self.ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -377,7 +386,7 @@ impl MediaTools {
     }
 
     pub async fn available_encoder(&self) -> String {
-        let output = Command::new(&self.ffmpeg)
+        let output = background_command(&self.ffmpeg)
             .args(["-hide_banner", "-encoders"])
             .output()
             .await;
@@ -404,7 +413,7 @@ impl MediaTools {
             std::fs::create_dir_all(parent)?;
         }
         let duration = (edit.trim_end - edit.trim_start).max(0.1);
-        let mut command = Command::new(&self.ffmpeg);
+        let mut command = background_command(&self.ffmpeg);
         command
             .args([
                 "-hide_banner",
@@ -420,29 +429,40 @@ impl MediaTools {
         let mut asset_indices = HashMap::new();
         for overlay in &edit.overlays {
             let asset_id = match overlay {
-                Overlay::Audio { asset_id, .. } | Overlay::Video { asset_id, .. } => Some(asset_id),
+                Overlay::Audio { asset_id, .. }
+                | Overlay::Video { asset_id, .. }
+                | Overlay::Image { asset_id, .. } => Some(asset_id),
                 _ => None,
             };
             if let Some(asset_id) = asset_id {
                 if !asset_indices.contains_key(asset_id) {
                     if let Some(path) = assets.get(asset_id) {
                         let index = asset_indices.len() + 1;
-                        command.args(["-i", path]);
+                        if matches!(overlay, Overlay::Image { .. }) {
+                            command.args(["-loop", "1", "-framerate", "30", "-i", path]);
+                        } else {
+                            command.args(["-i", path]);
+                        }
                         asset_indices.insert(asset_id.clone(), index);
                     }
                 }
             }
         }
         let kept = kept_segments(edit);
+        let tracks = &edit.track_visibility;
         let (mut filter, video_input, source_audio_input) =
-            cut_filter(&kept, source.audio_codec.is_some());
-        let base = base_video_filter(
-            &video_input,
-            &edit.crop.mode,
-            edit.crop.zoom,
-            preset.width,
-            preset.height,
-        );
+            cut_filter(&kept, source.audio_codec.is_some() && tracks.audio);
+        let base = if tracks.video {
+            base_video_filter(
+                &video_input,
+                &edit.crop.mode,
+                edit.crop.zoom,
+                preset.width,
+                preset.height,
+            )
+        } else {
+            format!("color=c=black:s={}:{}:d={duration:.3}[base]", preset.width, preset.height)
+        };
         if !filter.is_empty() {
             filter.push(';');
         }
@@ -459,9 +479,12 @@ impl MediaTools {
                     y,
                     start,
                     end,
-                } => {
+                    font_family,
+                    ..
+                } if tracks.text => {
                     let next = format!("v{}", sanitize_label(id));
-                    filter.push_str(&format!(";[{current_video}]drawtext=text='{}':fontcolor={}:fontsize={}:x=(w-text_w)*{:.4}:y=(h-text_h)*{:.4}:borderw=2:bordercolor=black@0.6:enable='between(t,{:.3},{:.3})'[{next}]", escape_drawtext(text), normalize_color(color), size, x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), start, end));
+                    let font = font_family.as_ref().map(|name| format!(":font={name}")).unwrap_or_default();
+                    filter.push_str(&format!(";[{current_video}]drawtext=text='{}':fontcolor={}:fontsize={}{font}:x=(w-text_w)*{:.4}:y=(h-text_h)*{:.4}:borderw=2:bordercolor=black@0.6:enable='between(t,{:.3},{:.3})'[{next}]", escape_drawtext(text), normalize_color(color), size, x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), start, end));
                     current_video = next;
                 }
                 Overlay::Video {
@@ -472,8 +495,9 @@ impl MediaTools {
                     x,
                     y,
                     scale,
+                    source_offset,
                     chroma_key,
-                } => {
+                } if tracks.overlays => {
                     if let Some(index) = asset_indices.get(asset_id) {
                         let prepared = format!("ov{}", sanitize_label(id));
                         let next = format!("v{}", sanitize_label(id));
@@ -489,33 +513,56 @@ impl MediaTools {
                                 )
                             })
                             .unwrap_or_default();
-                        filter.push_str(&format!(";[{index}:v]setpts=PTS-STARTPTS+{start:.3}/TB,scale=iw*{:.3}:-2{chroma}[{prepared}];[{current_video}][{prepared}]overlay=x=(W-w)*{:.4}:y=(H-h)*{:.4}:enable='between(t,{start:.3},{end:.3})'[{next}]", scale.clamp(0.05, 2.0), x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+                        let source_trim = source_offset.map(|offset| format!("trim=start={offset:.3}:end={:.3},", offset + (end - start).max(0.05))).unwrap_or_default();
+                        filter.push_str(&format!(";[{index}:v]{source_trim}setpts=PTS-STARTPTS+{start:.3}/TB,scale=iw*{:.3}:-2{chroma}[{prepared}];[{current_video}][{prepared}]overlay=x=(W-w)*{:.4}:y=(H-h)*{:.4}:enable='between(t,{start:.3},{end:.3})'[{next}]", scale.max(0.01), x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
                         current_video = next;
                     }
                 }
                 Overlay::Audio { .. } => {}
+                Overlay::Image {
+                    id,
+                    asset_id,
+                    start,
+                    end,
+                    x,
+                    y,
+                    scale,
+                } if tracks.overlays => {
+                    if let Some(index) = asset_indices.get(asset_id) {
+                        let prepared = format!("img{}", sanitize_label(id));
+                        let next = format!("v{}", sanitize_label(id));
+                        filter.push_str(&format!(";[{index}:v]setpts=PTS-STARTPTS+{start:.3}/TB,scale=iw*{:.3}:-2[{prepared}];[{current_video}][{prepared}]overlay=x=(W-w)*{:.4}:y=(H-h)*{:.4}:enable='between(t,{start:.3},{end:.3})'[{next}]", scale.max(0.01), x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+                        current_video = next;
+                    }
+                }
+                _ => {}
             }
         }
         let audio_overlays: Vec<_> = edit
             .overlays
             .iter()
             .filter_map(|overlay| {
+                if !tracks.audio { return None; }
                 if let Overlay::Audio {
                     asset_id,
                     start,
+                    end,
                     volume,
                     ..
                 } = overlay
                 {
                     asset_indices
                         .get(asset_id)
-                        .map(|index| (*index, *start, *volume))
+                        .map(|index| (*index, *start, *end, *volume))
                 } else {
                     None
                 }
             })
             .collect();
-        let audio_map = if audio_overlays.is_empty() {
+        let audio_map = if !tracks.audio {
+            filter.push_str(";anullsrc=channel_layout=stereo:sample_rate=48000[aout]");
+            "[aout]".to_string()
+        } else if audio_overlays.is_empty() {
             source_audio_input
                 .map(|label| audio_map_spec(&label))
                 .unwrap_or_else(|| "0:a?".to_string())
@@ -525,9 +572,10 @@ impl MediaTools {
                 filter.push_str(&format!(";[{label}]asetpts=PTS-STARTPTS[a0]"));
                 labels.push("[a0]".to_string());
             }
-            for (n, (index, start, volume)) in audio_overlays.iter().enumerate() {
+            for (n, (index, start, end, volume)) in audio_overlays.iter().enumerate() {
                 filter.push_str(&format!(
-                    ";[{index}:a]atrim=start=0,asetpts=PTS-STARTPTS+{start:.3}/TB,volume={:.3}[a{}]",
+                    ";[{index}:a]atrim=start=0:end={:.3},asetpts=PTS-STARTPTS+{start:.3}/TB,volume={:.3}[a{}]",
+                    (end - start).max(0.05),
                     volume.clamp(0.0, 2.0),
                     n + 1
                 ));
@@ -560,8 +608,9 @@ impl MediaTools {
         command
             .args([
                 "-r",
-                &preset
-                    .max_fps
+                &edit
+                    .fps
+                    .unwrap_or(preset.max_fps)
                     .min(source.fps.round().max(24.0) as u32)
                     .to_string(),
                 "-pix_fmt",
@@ -598,7 +647,7 @@ impl MediaTools {
         if media.width != width || media.height != height {
             bail!("Невірний розмір готового відео")
         }
-        let status = Command::new(&self.ffmpeg)
+        let status = background_command(&self.ffmpeg)
             .args(["-v", "error", "-i"])
             .arg(output)
             .args(["-f", "null", "-"])
@@ -945,6 +994,9 @@ mod tests {
             },
             overlays: vec![],
             revision: 1,
+            cut_points: vec![],
+            fps: None,
+            track_visibility: Default::default(),
         };
         assert_eq!(kept_segments(&edit), vec![(0.0, 3.0), (5.0, 10.0)]);
     }

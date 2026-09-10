@@ -6,6 +6,13 @@ use std::{
 };
 use tokio::process::Command;
 
+fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
 #[derive(Debug, Clone)]
 pub struct Upscaler {
     executable: Option<PathBuf>,
@@ -45,7 +52,7 @@ impl Upscaler {
             UpscaleMode::Off => bail!("AI-upscale вимкнено"),
         };
         std::fs::create_dir_all(output)?;
-        let status = Command::new(executable)
+        let status = background_command(executable)
             .args(["-i"])
             .arg(input)
             .args(["-o"])

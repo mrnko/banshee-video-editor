@@ -24,6 +24,8 @@ pub struct Project {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub status: ProjectStatus,
+    #[serde(default)]
+    pub thumbnail_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,6 +82,8 @@ pub struct CandidateClip {
     pub end_seconds: f64,
     pub score: f32,
     pub reason: String,
+    #[serde(default)]
+    pub name: Option<String>,
     pub thumbnail_path: Option<String>,
     pub estimated_cost_usd: f64,
     pub analysis_source: AnalysisSource,
@@ -109,6 +113,27 @@ pub struct EditDecisionList {
     pub crop: CropSettings,
     pub overlays: Vec<Overlay>,
     pub revision: u32,
+    #[serde(default)]
+    pub cut_points: Vec<f64>,
+    #[serde(default)]
+    pub fps: Option<u32>,
+    #[serde(default)]
+    pub track_visibility: TrackVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackVisibility {
+    pub video: bool,
+    pub overlays: bool,
+    pub text: bool,
+    pub audio: bool,
+}
+
+impl Default for TrackVisibility {
+    fn default() -> Self {
+        Self { video: true, overlays: true, text: true, audio: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,7 +161,7 @@ pub enum CropMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Overlay {
     Text {
         id: String,
@@ -147,9 +172,22 @@ pub enum Overlay {
         y: f32,
         start: f64,
         end: f64,
+        #[serde(default)]
+        font_family: Option<String>,
+        #[serde(default)]
+        underline: bool,
+        #[serde(default)]
+        background: bool,
+        #[serde(default)]
+        background_color: Option<String>,
+        #[serde(default)]
+        background_radius: Option<u16>,
+        #[serde(default)]
+        lane: u16,
     },
     Audio {
         id: String,
+        #[serde(alias = "asset_id")]
         asset_id: String,
         start: f64,
         end: f64,
@@ -157,13 +195,27 @@ pub enum Overlay {
     },
     Video {
         id: String,
+        #[serde(alias = "asset_id")]
         asset_id: String,
         start: f64,
         end: f64,
         x: f32,
         y: f32,
         scale: f32,
+        #[serde(default)]
+        source_offset: Option<f64>,
+        #[serde(alias = "chroma_key")]
         chroma_key: Option<ChromaKey>,
+    },
+    Image {
+        id: String,
+        #[serde(alias = "asset_id")]
+        asset_id: String,
+        start: f64,
+        end: f64,
+        x: f32,
+        y: f32,
+        scale: f32,
     },
 }
 
@@ -243,6 +295,8 @@ pub struct Asset {
     pub path: String,
     pub kind: AssetKind,
     pub missing: bool,
+    #[serde(default)]
+    pub thumbnail_path: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -309,6 +363,7 @@ mod tests {
             end_seconds: 10.0,
             score: 0.0,
             reason: String::new(),
+            name: None,
             thumbnail_path: None,
             estimated_cost_usd: 0.0,
             analysis_source: AnalysisSource::Local,
@@ -321,5 +376,24 @@ mod tests {
         assert!(default_presets()
             .iter()
             .any(|p| p.id == "high-1080" && p.width == 1080));
+    }
+
+    #[test]
+    fn overlay_uses_camel_case_asset_fields() {
+        let overlay = Overlay::Video {
+            id: "overlay".into(),
+            asset_id: "asset".into(),
+            start: 0.0,
+            end: 2.0,
+            x: 0.5,
+            y: 0.5,
+            scale: 0.5,
+            source_offset: None,
+            chroma_key: Some(ChromaKey { color: "#00ff00".into(), similarity: 0.2, blend: 0.1, spill: 0.1 }),
+        };
+        let value = serde_json::to_value(&overlay).unwrap();
+        assert_eq!(value["assetId"], "asset");
+        assert!(value.get("chromaKey").is_some());
+        assert!(serde_json::from_value::<Overlay>(value).is_ok());
     }
 }

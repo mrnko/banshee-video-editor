@@ -1,7 +1,7 @@
 use anyhow::Result;
 use banshee_domain::{Asset, AssetFolder, CandidateClip, EditDecisionList, Project, UsageEvent};
 use directories::ProjectDirs;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -103,12 +103,34 @@ impl Store {
         Ok(path)
     }
 
+    pub fn library_dir(&self) -> Result<PathBuf> {
+        let path = self.root.join("library");
+        fs::create_dir_all(path.join("thumbnails"))?;
+        Ok(path)
+    }
+
     pub fn save_project(&self, project: &Project) -> Result<()> {
         let data = serde_json::to_string(project)?;
         self.connection.lock().unwrap().execute(
             "INSERT INTO projects(id,data,updated_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
             params![project.id, data, project.updated_at.to_rfc3339()],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        let mut connection = self.connection.lock().unwrap();
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM edits WHERE project_id=?1", [id])?;
+        transaction.execute("DELETE FROM candidates WHERE project_id=?1", [id])?;
+        transaction.execute("DELETE FROM usage_events WHERE json_extract(data,'$.projectId')=?1", [id])?;
+        transaction.execute("DELETE FROM render_events WHERE project_id=?1", [id])?;
+        transaction.execute("DELETE FROM projects WHERE id=?1", [id])?;
+        transaction.commit()?;
+        let project_dir = self.root.join("projects").join(id);
+        if project_dir.is_dir() {
+            fs::remove_dir_all(project_dir)?;
+        }
         Ok(())
     }
 
@@ -152,6 +174,51 @@ impl Store {
             .collect()
     }
 
+    pub fn save_candidate(&self, candidate: &CandidateClip) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "UPDATE candidates SET data=?2 WHERE id=?1",
+            params![candidate.id, serde_json::to_string(candidate)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn candidate(&self, id: &str) -> Result<CandidateClip> {
+        let data: String = self.connection.lock().unwrap().query_row(
+            "SELECT data FROM candidates WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    pub fn delete_candidate(&self, id: &str) -> Result<()> {
+        let connection = self.connection.lock().unwrap();
+        let candidate: Option<CandidateClip> = connection
+            .query_row("SELECT data FROM candidates WHERE id=?1", [id], |row| row.get::<_, String>(0))
+            .optional()?
+            .map(|data| serde_json::from_str(&data))
+            .transpose()?;
+        let project_id: Option<String> = connection
+            .query_row("SELECT project_id FROM candidates WHERE id=?1", [id], |row| row.get(0))
+            .optional()?;
+        drop(connection);
+        let mut connection = self.connection.lock().unwrap();
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM edits WHERE candidate_id=?1", [id])?;
+        transaction.execute("DELETE FROM candidates WHERE id=?1", [id])?;
+        transaction.commit()?;
+        if let (Some(project_id), Some(candidate)) = (project_id, candidate) {
+            if let Some(path) = candidate.thumbnail_path {
+                let safe_root = self.root.join("projects").join(project_id);
+                let thumbnail = PathBuf::from(path);
+                if thumbnail.starts_with(&safe_root) && thumbnail.is_file() {
+                    let _ = fs::remove_file(thumbnail);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn save_edit(&self, edit: &EditDecisionList) -> Result<()> {
         self.connection.lock().unwrap().execute(
             "INSERT INTO edits(candidate_id,project_id,data,saved_at) VALUES(?1,?2,?3,datetime('now')) ON CONFLICT(candidate_id) DO UPDATE SET data=excluded.data,saved_at=excluded.saved_at",
@@ -179,6 +246,26 @@ impl Store {
                 asset.created_at.to_rfc3339()
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn asset(&self, id: &str) -> Result<Asset> {
+        let data: String = self.connection.lock().unwrap().query_row(
+            "SELECT data FROM assets WHERE id=?1", [id], |row| row.get(0),
+        )?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    pub fn delete_asset(&self, id: &str) -> Result<()> {
+        let asset = self.asset(id)?;
+        self.connection.lock().unwrap().execute("DELETE FROM assets WHERE id=?1", [id])?;
+        if let Some(path) = asset.thumbnail_path {
+            let thumbnail = PathBuf::from(path);
+            let safe_root = self.root.join("library");
+            if thumbnail.starts_with(&safe_root) && thumbnail.is_file() {
+                let _ = fs::remove_file(thumbnail);
+            }
+        }
         Ok(())
     }
 

@@ -38,6 +38,9 @@ async fn analyzes_and_renders_real_source() {
         },
         overlays: vec![],
         revision: 1,
+        cut_points: vec![],
+        fps: None,
+        track_visibility: Default::default(),
     };
     let output = root.join("smoke.mp4");
     tools

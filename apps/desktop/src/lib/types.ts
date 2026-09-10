@@ -5,10 +5,10 @@ export interface SourceMedia {
   path: string; fileName: string; durationSeconds: number; width: number; height: number;
   fps: number; videoCodec: string; audioCodec?: string; bitrate: number;
 }
-export interface Project { id: string; name: string; source: SourceMedia; createdAt: string; updatedAt: string; status: ProjectStatus }
+export interface Project { id: string; name: string; source: SourceMedia; createdAt: string; updatedAt: string; status: ProjectStatus; thumbnailPath?: string }
 export interface CandidateClip {
   id: string; projectId: string; startSeconds: number; endSeconds: number; score: number;
-  reason: string; thumbnailPath?: string; estimatedCostUsd: number; analysisSource: "local" | "openAi";
+  reason: string; name?: string; thumbnailPath?: string; estimatedCostUsd: number; analysisSource: "local" | "openAi";
 }
 export interface AnalysisSettings {
   platform: "tikTok" | "reels" | "shorts"; momentCount?: number;
@@ -16,17 +16,19 @@ export interface AnalysisSettings {
 }
 export interface CropSettings { mode: "dynamic" | "center" | "blurredBackground"; zoom: number; centerX: number; centerY: number }
 export type Overlay =
-  | { type: "text"; id: string; text: string; color: string; size: number; x: number; y: number; start: number; end: number }
+  | { type: "text"; id: string; text: string; color: string; size: number; x: number; y: number; start: number; end: number; fontFamily?: string; underline?: boolean; background?: boolean; backgroundColor?: string; backgroundRadius?: number; lane?: number }
   | { type: "audio"; id: string; assetId: string; start: number; end: number; volume: number }
-  | { type: "video"; id: string; assetId: string; start: number; end: number; x: number; y: number; scale: number; chromaKey?: ChromaKey };
+  | { type: "video"; id: string; assetId: string; start: number; end: number; x: number; y: number; scale: number; sourceOffset?: number; chromaKey?: ChromaKey }
+  | { type: "image"; id: string; assetId: string; start: number; end: number; x: number; y: number; scale: number };
 export interface ChromaKey { color: string; similarity: number; blend: number; spill: number }
+export interface TrackVisibility { video: boolean; overlays: boolean; text: boolean; audio: boolean }
 export interface EditDecisionList {
   projectId: string; candidateId: string; trimStart: number; trimEnd: number;
-  removedRanges: Array<{ start: number; end: number }>; crop: CropSettings; overlays: Overlay[]; revision: number;
+  removedRanges: Array<{ start: number; end: number }>; crop: CropSettings; overlays: Overlay[]; revision: number; cutPoints: number[]; fps?: number; trackVisibility?: TrackVisibility;
 }
 export interface RenderPreset { id: string; label: string; width: number; height: number; maxFps: number; videoBitrateMbps: number; aiUpscale: "off" | "auto" | "anime" | "general" }
 export interface RenderJob { id: string; projectId: string; candidateId: string; outputPath: string; status: string; progress: number; warning?: string }
-export interface Asset { id: string; folderId?: string; name: string; path: string; kind: "video" | "audio" | "image"; missing: boolean; createdAt: string }
+export interface Asset { id: string; folderId?: string; name: string; path: string; kind: "video" | "audio" | "image"; missing: boolean; thumbnailPath?: string; createdAt: string }
 export interface AssetFolder { id: string; name: string; createdAt: string }
 export interface AppSettings { autosaveSeconds: number; model: string; adminCostSync: boolean; prompt: string }
 export interface SpendPoint { label: string; value: number }
@@ -34,7 +36,10 @@ export interface DashboardStats { spendToday: number; spendPoints: SpendPoint[];
 export interface ModelOption { id: string; available: boolean; experimental: boolean; recommended: boolean }
 export interface BootstrapData {
   projects: Project[]; assets: Asset[]; assetFolders: AssetFolder[]; settings: AppSettings; stats: DashboardStats;
-  presets: RenderPreset[]; ffmpegAvailable: boolean; upscalerAvailable: boolean; apiKeyConfigured: boolean; version: string;
+  presets: RenderPreset[]; ffmpegAvailable: boolean; upscalerAvailable: boolean; apiKeyConfigured: boolean; version: string; portable: boolean;
 }
+export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installing" | "error";
+export interface UpdateInfo { version: string; title: string; notes: string; date?: string; portableUrl: string }
+export interface UpdaterState { status: UpdateStatus; info?: UpdateInfo; downloadedBytes: number; totalBytes?: number; lastCheckedAt?: string; error?: string; modalOpen: boolean }
 
 export const DEFAULT_PROMPT = "Ти — монтажний асистент коротких вертикальних відео. Обирай лише найдинамічніші, візуально насичені й зрозумілі без контексту моменти. Оціни дію, несподіваність, емоційність, придатність для TikTok/Reels/Shorts та силу hook у перші 1–2 секунди. Не пропонуй довгі вступи, меню, завантаження, очікування, повтори або статичні сцени. Побудуй кожен кліп як hook → розвиток → кульмінація → коротке завершення. Поверни точні таймкоди, оцінку 0–100 і стислу причину вибору. Не вигадуй подій, яких немає на наданих кадрах і в транскрипції.";

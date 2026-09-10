@@ -2,7 +2,7 @@ use banshee_ai::{fetch_organization_cost, ModelOption, OpenAiClient, RECOMMENDED
 use banshee_domain::{
     default_presets, AnalysisSettings, AnalysisSource, Asset, AssetFolder, AssetKind,
     CandidateClip, CropMode, CropSettings, EditDecisionList, JobStatus, Project, ProjectStatus,
-    RenderJob, UpscaleMode,
+    RenderJob, TrackVisibility, UpscaleMode,
 };
 use banshee_media::MediaTools;
 use banshee_storage::{delete_secret, get_secret, set_secret, AppSettings, DashboardStats, Store};
@@ -39,6 +39,7 @@ struct BootstrapData {
     upscaler_available: bool,
     api_key_configured: bool,
     version: &'static str,
+    portable: bool,
 }
 
 type CommandResult<T> = Result<T, String>;
@@ -57,6 +58,9 @@ fn bootstrap(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Bootst
     let assets = state.store.assets().map_err(error_message)?;
     for project in &projects {
         expose_media(&app, &project.source.path);
+        if let Some(thumbnail) = &project.thumbnail_path {
+            expose_media(&app, thumbnail);
+        }
         if let Ok(candidates) = state.store.candidates(&project.id) {
             for candidate in candidates {
                 if let Some(thumbnail) = candidate.thumbnail_path {
@@ -67,6 +71,9 @@ fn bootstrap(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Bootst
     }
     for asset in &assets {
         expose_media(&app, &asset.path);
+        if let Some(thumbnail) = &asset.thumbnail_path {
+            expose_media(&app, thumbnail);
+        }
     }
     Ok(BootstrapData {
         projects,
@@ -79,6 +86,10 @@ fn bootstrap(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Bootst
         upscaler_available: state.upscaler.available(),
         api_key_configured: get_secret("openai-api-key").is_some(),
         version: env!("CARGO_PKG_VERSION"),
+        portable: std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("banshee-portable.marker")))
+            .is_some_and(|marker| marker.exists()),
     })
 }
 
@@ -94,20 +105,28 @@ async fn import_video(
         .file_stem()
         .and_then(|v| v.to_str())
         .unwrap_or("Нове відео");
+    let id = Uuid::new_v4().to_string();
+    let project_dir = state.store.project_dir(&id).map_err(error_message)?;
+    let thumbnail = project_dir.join("thumbnails").join("source.jpg");
+    let thumbnail_path = media
+        .generate_thumbnail(Path::new(&path), 0.5, &thumbnail)
+        .await
+        .ok()
+        .and(thumbnail.is_file().then(|| thumbnail.to_string_lossy().into_owned()));
     let project = Project {
-        id: Uuid::new_v4().to_string(),
+        id,
         name: stem.into(),
         source,
         created_at: Utc::now(),
         updated_at: Utc::now(),
         status: ProjectStatus::Imported,
+        thumbnail_path,
     };
-    state
-        .store
-        .project_dir(&project.id)
-        .map_err(error_message)?;
     state.store.save_project(&project).map_err(error_message)?;
     expose_media(&app, &project.source.path);
+    if let Some(thumbnail) = &project.thumbnail_path {
+        expose_media(&app, thumbnail);
+    }
     Ok(project)
 }
 
@@ -401,7 +420,7 @@ async fn render_clip(
 }
 
 #[tauri::command]
-fn import_asset(
+async fn import_asset(
     path: String,
     folder_id: Option<String>,
     app: AppHandle,
@@ -422,8 +441,26 @@ fn import_asset(
         "png" | "jpg" | "jpeg" | "webp" => AssetKind::Image,
         _ => return Err("Непідтримуваний тип ресурсу".into()),
     };
+    let id = Uuid::new_v4().to_string();
+    let thumbnail_path = if matches!(kind, AssetKind::Video) {
+        let thumbnail = state
+            .store
+            .library_dir()
+            .map_err(error_message)?
+            .join("thumbnails")
+            .join(format!("{id}.jpg"));
+        match state.media.as_ref() {
+            Some(media) if media.generate_thumbnail(source, 0.5, &thumbnail).await.is_ok() => {
+                expose_media(&app, &thumbnail);
+                Some(thumbnail.to_string_lossy().into_owned())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let asset = Asset {
-        id: Uuid::new_v4().to_string(),
+        id,
         folder_id,
         name: source
             .file_name()
@@ -433,11 +470,60 @@ fn import_asset(
         path: source.to_string_lossy().into_owned(),
         kind,
         missing: false,
+        thumbnail_path,
         created_at: Utc::now(),
     };
     state.store.add_asset(&asset).map_err(error_message)?;
     expose_media(&app, &asset.path);
     Ok(asset)
+}
+
+fn valid_name(value: &str, label: &str) -> CommandResult<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 80 {
+        return Err(format!("Назва {label} має містити 1–80 символів"));
+    }
+    Ok(value.into())
+}
+
+#[tauri::command]
+fn rename_project(project_id: String, name: String, state: State<'_, AppState>) -> CommandResult<Project> {
+    let mut project = state.store.project(&project_id).map_err(error_message)?;
+    project.name = valid_name(&name, "проєкту")?;
+    project.updated_at = Utc::now();
+    state.store.save_project(&project).map_err(error_message)?;
+    Ok(project)
+}
+
+#[tauri::command]
+fn delete_project(project_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    state.store.delete_project(&project_id).map_err(error_message)
+}
+
+#[tauri::command]
+fn rename_candidate(candidate_id: String, name: String, state: State<'_, AppState>) -> CommandResult<CandidateClip> {
+    let mut candidate = state.store.candidate(&candidate_id).map_err(error_message)?;
+    candidate.name = Some(valid_name(&name, "моменту")?);
+    state.store.save_candidate(&candidate).map_err(error_message)?;
+    Ok(candidate)
+}
+
+#[tauri::command]
+fn delete_candidate(candidate_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    state.store.delete_candidate(&candidate_id).map_err(error_message)
+}
+
+#[tauri::command]
+fn rename_asset(asset_id: String, name: String, state: State<'_, AppState>) -> CommandResult<Asset> {
+    let mut asset = state.store.asset(&asset_id).map_err(error_message)?;
+    asset.name = valid_name(&name, "ресурсу")?;
+    state.store.add_asset(&asset).map_err(error_message)?;
+    Ok(asset)
+}
+
+#[tauri::command]
+fn delete_asset(asset_id: String, state: State<'_, AppState>) -> CommandResult<()> {
+    state.store.delete_asset(&asset_id).map_err(error_message)
 }
 
 #[tauri::command]
@@ -586,14 +672,6 @@ fn validate_edit(edit: &EditDecisionList) -> CommandResult<()> {
     if edit.trim_start < 0.0 || edit.trim_end <= edit.trim_start {
         return Err("Невірний діапазон trim".into());
     }
-    let active_videos = edit
-        .overlays
-        .iter()
-        .filter(|o| matches!(o, banshee_domain::Overlay::Video { .. }))
-        .count();
-    if active_videos > 1 {
-        return Err("У поточній версії підтримується одна відеовставка".into());
-    }
     let mut ranges: Vec<_> = edit
         .removed_ranges
         .iter()
@@ -640,6 +718,9 @@ fn default_edit(candidate: &CandidateClip) -> EditDecisionList {
         },
         overlays: vec![],
         revision: 1,
+        cut_points: vec![],
+        fps: None,
+        track_visibility: TrackVisibility::default(),
     }
 }
 
@@ -655,6 +736,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -667,6 +750,12 @@ pub fn run() {
             render_clip,
             import_asset,
             create_asset_folder,
+            rename_project,
+            delete_project,
+            rename_candidate,
+            delete_candidate,
+            rename_asset,
+            delete_asset,
             save_settings,
             set_api_key,
             list_openai_models,

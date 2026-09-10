@@ -11,6 +11,7 @@ New-Item -ItemType Directory -Path $resolvedStage | Out-Null
 Copy-Item -LiteralPath (Join-Path $releaseDir 'banshee-video-editor.exe') -Destination $resolvedStage
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $resolvedStage
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination $resolvedStage
+New-Item -ItemType File -Path (Join-Path $resolvedStage 'banshee-portable.marker') -Force | Out-Null
 $toolDir = Join-Path $projectRoot 'tools\bin'
 if (Test-Path -LiteralPath $toolDir) { Copy-Item -LiteralPath $toolDir -Destination (Join-Path $resolvedStage 'tools') -Recurse }
 Compress-Archive -Path "$resolvedStage\*" -DestinationPath "$resolvedStage.zip" -Force

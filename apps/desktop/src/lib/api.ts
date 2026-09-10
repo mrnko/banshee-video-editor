@@ -21,7 +21,7 @@ const demoBootstrap: BootstrapData = {
     { id: "balanced-720", label: "720p Balanced", width: 720, height: 1280, maxFps: 60, videoBitrateMbps: 8, aiUpscale: "off" },
     { id: "high-1080", label: "1080p High", width: 1080, height: 1920, maxFps: 60, videoBitrateMbps: 16, aiUpscale: "auto" },
     { id: "source-max", label: "Source-aware Maximum", width: 1080, height: 1920, maxFps: 60, videoBitrateMbps: 24, aiUpscale: "auto" }
-  ], ffmpegAvailable: true, upscalerAvailable: false, apiKeyConfigured: false, version: "0.1.0"
+  ], ffmpegAvailable: true, upscalerAvailable: false, apiKeyConfigured: false, version: "0.1.0", portable: false
 };
 
 const native = isTauri();
@@ -37,8 +37,12 @@ export const api = {
     return typeof result === "string" ? result : null;
   },
   async importVideo(path: string): Promise<Project> { if (!native) { await sleep(500); return demoProject; } return invoke("import_video", { path }); },
+  async renameProject(projectId: string, name: string): Promise<Project> { return invoke("rename_project", { projectId, name }); },
+  async deleteProject(projectId: string) { return invoke("delete_project", { projectId }); },
   async candidates(projectId: string): Promise<CandidateClip[]> { if (!native) return projectId === "demo" ? demoCandidates : []; return invoke("project_candidates", { projectId }); },
   async analyze(projectId: string, settings: AnalysisSettings): Promise<CandidateClip[]> { if (!native) { await sleep(900); return demoCandidates.map(c => ({ ...c, projectId })); } return invoke("analyze_project", { projectId, settings }); },
+  async renameCandidate(candidateId: string, name: string): Promise<CandidateClip> { return invoke("rename_candidate", { candidateId, name }); },
+  async deleteCandidate(candidateId: string) { return invoke("delete_candidate", { candidateId }); },
   async saveEdit(edit: EditDecisionList) { if (!native) return; return invoke("save_edit", { edit }); },
   async loadEdit(candidateId: string): Promise<EditDecisionList | null> { if (!native) return null; return invoke("load_edit", { candidateId }); },
   async render(projectId: string, candidateId: string, presetId: string): Promise<RenderJob> {
@@ -47,9 +51,19 @@ export const api = {
     if (!outputPath) throw new Error("RENDER_CANCELLED");
     return invoke("render_clip", { projectId, candidateId, presetId, outputPath });
   },
-  async chooseAsset(): Promise<string | null> { if (!native) return null; const result = await open({ multiple: false }); return typeof result === "string" ? result : null; },
+  async chooseAsset(): Promise<string | null> {
+    if (!native) return null;
+    const result = await open({ multiple: false, filters: [
+      { name: "Відео", extensions: ["mp4", "mov", "mkv", "webm", "avi"] },
+      { name: "Зображення", extensions: ["png", "jpg", "jpeg", "webp"] },
+      { name: "Аудіо", extensions: ["mp3", "wav", "aac", "m4a", "flac"] },
+    ] });
+    return typeof result === "string" ? result : null;
+  },
   async importAsset(path: string, folderId?: string): Promise<Asset> { return invoke("import_asset", { path, folderId }); },
   async createAssetFolder(name: string): Promise<AssetFolder> { if (!native) return { id: crypto.randomUUID(), name, createdAt: new Date().toISOString() }; return invoke("create_asset_folder", { name }); },
+  async renameAsset(assetId: string, name: string): Promise<Asset> { return invoke("rename_asset", { assetId, name }); },
+  async deleteAsset(assetId: string) { return invoke("delete_asset", { assetId }); },
   async saveSettings(settings: AppSettings) { if (!native) return; return invoke("save_settings", { settings }); },
   async setApiKey(kind: "openai" | "admin", value: string) { if (!native) return; return invoke("set_api_key", { kind, value }); },
   async models(): Promise<ModelOption[]> { if (!native) return ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map(id => ({ id, available: id === "gpt-5.6-terra", experimental: false, recommended: id === "gpt-5.6-terra" })); return invoke("list_openai_models"); },

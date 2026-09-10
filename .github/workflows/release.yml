@@ -1,16 +1,23 @@
-name: Windows release
+name: Windows main update
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: banshee-main-update
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -19,12 +26,51 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run version:check
-      - run: npm run tauri -- build
-      - run: powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1
-      - uses: softprops/action-gh-release@v2
+      - run: npm run check
+      - run: npm test
+      - run: cargo test --workspace
+
+      - name: Verify updater signing secret
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) {
+            throw "GitHub secret TAURI_SIGNING_PRIVATE_KEY is not configured"
+          }
+
+      - name: Compute build version
+        id: version
+        shell: pwsh
+        run: |
+          $baseVersion = (Get-Content VERSION -Raw).Trim()
+          $buildVersion = "$baseVersion-main.${{ github.run_number }}"
+          node scripts/set-version.mjs $buildVersion
+          "version=$buildVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Build signed updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build
+
+      - name: Package portable build
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1
+
+      - name: Create updater manifest
+        run: node scripts/create-updater-manifest.mjs "${{ steps.version.outputs.version }}" "${{ github.repository }}"
+
+      - name: Publish current repository release
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Banshee ${{ steps.version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          make_latest: true
+          prerelease: false
           files: |
             target/release/bundle/nsis/*.exe
-            dist/*.zip
-          generate_release_notes: true
-
+            target/release/bundle/nsis/*.sig
+            dist/*-portable.zip
+            dist/latest.json
