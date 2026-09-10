@@ -1,0 +1,22 @@
+name: Bug report
+description: Повідомити про відтворювану помилку
+body:
+  - type: textarea
+    attributes:
+      label: Що сталося?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Кроки відтворення
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Версія Banshee
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Системна інформація
+

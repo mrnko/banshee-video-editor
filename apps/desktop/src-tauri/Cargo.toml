@@ -1,0 +1,33 @@
+[package]
+name = "banshee-video-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "banshee_video_editor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+banshee-ai = { path = "../../../crates/banshee-ai" }
+banshee-domain = { path = "../../../crates/banshee-domain" }
+banshee-media = { path = "../../../crates/banshee-media" }
+banshee-storage = { path = "../../../crates/banshee-storage" }
+banshee-upscaler = { path = "../../../crates/banshee-upscaler" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["ApplicationModel_DataTransfer", "Foundation", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_UI_Shell"] }
+windows-collections = "0.2"

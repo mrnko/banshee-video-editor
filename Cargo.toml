@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/desktop/src-tauri",
+  "crates/banshee-domain",
+  "crates/banshee-media",
+  "crates/banshee-ai",
+  "crates/banshee-storage",
+  "crates/banshee-upscaler"
+]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+license = "MIT"
+authors = ["Banshee Video Editor contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+directories = "6"
+keyring = { version = "3", features = ["windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "fs", "io-util"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"

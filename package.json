@@ -1,0 +1,15 @@
+{
+  "name": "banshee-video-editor",
+  "private": true,
+  "version": "0.1.2",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w @banshee/desktop",
+    "build": "npm run build -w @banshee/desktop",
+    "test": "npm run test -w @banshee/desktop",
+    "check": "npm run check -w @banshee/desktop",
+    "tauri": "npm run tauri -w @banshee/desktop",
+    "version:check": "node scripts/check-version.mjs"
+  },
+  "engines": { "node": ">=20" }
+}
